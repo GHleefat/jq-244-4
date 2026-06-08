@@ -19,6 +19,9 @@ export default function Home() {
   const returnTool = useToolStore((state) => state.returnTool);
   const getAllBorrowers = useToolStore((state) => state.getAllBorrowers);
   const getBorrower = useToolStore((state) => state.getBorrower);
+  const getOrCreateBorrower = useToolStore(
+    (state) => state.getOrCreateBorrower,
+  );
   const checkAndApplyOverduePenalties = useToolStore(
     (state) => state.checkAndApplyOverduePenalties,
   );
@@ -48,34 +51,14 @@ export default function Home() {
   );
 
   const allBorrowers = useMemo(() => {
-    const activeBorrowers = new Set(
+    const activeBorrowerNames = new Set(
       tools
         .filter((t) => t.status === "borrowed" && t.borrower)
         .map((t) => t.borrower!),
     );
-    const registered = getAllBorrowers();
-    const all = new Map<string, Borrower>();
-    registered.forEach((b) => all.set(b.name, b));
-    activeBorrowers.forEach((name) => {
-      if (!all.has(name)) {
-        all.set(
-          name,
-          getBorrower(name) || {
-            name,
-            creditScore: DEFAULT_CREDIT_SCORE,
-            totalBorrows: 0,
-            overdueCount: 0,
-            history: [],
-            creditRecords: [],
-            createdAt: new Date().toISOString().split("T")[0],
-          },
-        );
-      }
-    });
-    return Array.from(all.values()).sort(
-      (a, b) => b.creditScore - a.creditScore,
-    );
-  }, [tools, getAllBorrowers, getBorrower]);
+    activeBorrowerNames.forEach((name) => getOrCreateBorrower(name));
+    return getAllBorrowers().sort((a, b) => b.creditScore - a.creditScore);
+  }, [tools, getAllBorrowers, getOrCreateBorrower]);
 
   const handleBorrow = useCallback((tool: Tool) => {
     setSelectedTool(tool);
@@ -125,13 +108,11 @@ export default function Home() {
 
   const handleViewBorrowerCredit = useCallback(
     (borrowerName: string) => {
-      const borrower = getBorrower(borrowerName);
-      if (borrower) {
-        setSelectedBorrower(borrower);
-        setCreditPanelOpen(true);
-      }
+      const borrower = getOrCreateBorrower(borrowerName);
+      setSelectedBorrower(borrower);
+      setCreditPanelOpen(true);
     },
-    [getBorrower],
+    [getOrCreateBorrower],
   );
 
   const handleOpenBorrowerFromList = useCallback((borrower: Borrower) => {
@@ -294,14 +275,16 @@ export default function Home() {
         onConfirm={handleConfirmBorrow}
       />
 
-      <BorrowerCreditPanel
-        borrower={selectedBorrower!}
-        isOpen={creditPanelOpen && selectedBorrower !== null}
-        onClose={() => {
-          setCreditPanelOpen(false);
-          setSelectedBorrower(null);
-        }}
-      />
+      {selectedBorrower && (
+        <BorrowerCreditPanel
+          borrower={selectedBorrower}
+          isOpen={creditPanelOpen}
+          onClose={() => {
+            setCreditPanelOpen(false);
+            setSelectedBorrower(null);
+          }}
+        />
+      )}
     </div>
   );
 }

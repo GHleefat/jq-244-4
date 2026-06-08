@@ -114,6 +114,72 @@ function createBorrower(name: string): Borrower {
   };
 }
 
+function buildInitialBorrowers(tools: Tool[]): Record<string, Borrower> {
+  const borrowers: Record<string, Borrower> = {};
+  const today = getTodayISO();
+
+  tools.forEach((tool) => {
+    if (
+      tool.status === "borrowed" &&
+      tool.borrower &&
+      tool.borrowDate &&
+      tool.dueDate
+    ) {
+      const name = tool.borrower;
+      if (!borrowers[name]) {
+        borrowers[name] = createBorrower(name);
+      }
+
+      const borrower = borrowers[name];
+      const dueStatus = getDueStatus(tool.dueDate);
+      const isOverdue = dueStatus === "overdue";
+      const daysOverdue = isOverdue
+        ? Math.abs(getDaysRemaining(tool.dueDate))
+        : 0;
+
+      const historyItem: BorrowHistoryItem = {
+        id: generateId(),
+        toolId: tool.id,
+        toolName: tool.name,
+        toolIcon: tool.icon,
+        borrowDate: tool.borrowDate,
+        dueDate: tool.dueDate,
+        status: isOverdue ? "overdue" : "borrowed",
+      };
+
+      const borrowRecord: CreditRecord = {
+        id: generateId(),
+        date: tool.borrowDate,
+        type: "borrow",
+        change: 0,
+        reason: `借出「${tool.name}」`,
+        toolName: tool.name,
+      };
+
+      borrower.totalBorrows += 1;
+      borrower.history.push(historyItem);
+      borrower.creditRecords.push(borrowRecord);
+
+      if (isOverdue) {
+        borrower.overdueCount += 1;
+        const penalty = daysOverdue * CREDIT_RULES.OVERDUE_PER_DAY_DEDUCT;
+        const penaltyRecord: CreditRecord = {
+          id: generateId(),
+          date: today,
+          type: "overdue_deduct",
+          change: -penalty,
+          reason: `「${tool.name}」逾期 ${daysOverdue} 天`,
+          toolName: tool.name,
+        };
+        borrower.creditScore = clampCredit(borrower.creditScore - penalty);
+        borrower.creditRecords.push(penaltyRecord);
+      }
+    }
+  });
+
+  return borrowers;
+}
+
 interface ToolStore {
   tools: Tool[];
   borrowers: Record<string, Borrower>;
@@ -157,7 +223,7 @@ export const useToolStore = create<ToolStore>()(
   persist(
     (set, get) => ({
       tools: initialTools,
-      borrowers: {},
+      borrowers: buildInitialBorrowers(initialTools),
       searchQuery: "",
       selectedCategories: [],
       savedSearches: [],
@@ -560,6 +626,59 @@ export const useToolStore = create<ToolStore>()(
     }),
     {
       name: "tool-library-storage",
+      onRehydrateStorage: () => (state) => {
+        if (!state) return;
+        const borrowers = state.borrowers;
+        const rebuilt = buildInitialBorrowers(state.tools);
+        if (!borrowers || Object.keys(borrowers).length === 0) {
+          state.borrowers = rebuilt;
+          return;
+        }
+        const merged: Record<string, Borrower> = { ...borrowers };
+        Object.keys(rebuilt).forEach((name) => {
+          if (!merged[name]) {
+            merged[name] = rebuilt[name];
+            return;
+          }
+          const existing = merged[name];
+          const existingHistoryToolIds = new Set(
+            existing.history.map((h) => h.toolId),
+          );
+          rebuilt[name].history.forEach((h) => {
+            if (!existingHistoryToolIds.has(h.toolId)) {
+              existing.history.unshift(h);
+              existing.totalBorrows += 1;
+            }
+          });
+          const existingRecordKeys = new Set(
+            existing.creditRecords.map(
+              (r) => `${r.date}-${r.type}-${r.toolName || ""}`,
+            ),
+          );
+          rebuilt[name].creditRecords.forEach((r) => {
+            const key = `${r.date}-${r.type}-${r.toolName || ""}`;
+            if (!existingRecordKeys.has(key)) {
+              existing.creditRecords.unshift(r);
+            }
+          });
+          if (rebuilt[name].overdueCount > 0 && existing.overdueCount === 0) {
+            existing.overdueCount = rebuilt[name].overdueCount;
+          }
+          const totalPenalty = existing.creditRecords
+            .filter((r) => r.change < 0)
+            .reduce((sum, r) => sum + Math.abs(r.change), 0);
+          const totalBonus = existing.creditRecords
+            .filter((r) => r.change > 0)
+            .reduce((sum, r) => sum + r.change, 0);
+          const expected = clampCredit(
+            DEFAULT_CREDIT_SCORE - totalPenalty + totalBonus,
+          );
+          if (existing.creditScore !== expected) {
+            existing.creditScore = expected;
+          }
+        });
+        state.borrowers = merged;
+      },
     },
   ),
 );
